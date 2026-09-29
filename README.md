@@ -352,3 +352,134 @@ Rode uma vez e guarde o endereço: ao compartilhar de novo, o link muda.
 - Não altere os datasets de avaliação - apenas os prompts em prompts/bug_to_user_story_v2.yml
 - Itere, itere, itere - é normal precisar de 3-5 iterações para atingir 0.8 em todas as métricas
 - Documente seu processo - a jornada de otimização é tão importante quanto o resultado final
+
+## Técnicas Aplicadas (Fase 2)
+
+O prompt otimizado está em `prompts/bug_to_user_story_v2.yml`. Few-shot Learning é obrigatório. As técnicas adicionais são Role Prompting, Chain of Thought e Skeleton of Thought. As restrições negativas cumprem a regra de comportamento explícito: a resposta não pode trazer introdução, negrito nem seção que o tipo de bug não autoriza.
+
+### Few-shot Learning
+
+Justificativa: a referência muda de formato conforme o bug. Um caso de interface pede só a User Story e os critérios. Um caso com HTTP, cálculo, estoque, Android, modal ou vários problemas pede blocos diferentes. Os pares de entrada e saída mostram esse formato pronto, para o modelo repetir a estrutura em vez de inventar títulos.
+
+Onde: seção `## Exemplos` do system prompt. São 15 pares `Relato:` / `Saída:`, do caso simples ao caso com `=== ===`. Os relatos dos exemplos estão parafraseados em relação ao dataset, para o modelo aprender o padrão e não decorar a frase original.
+
+```text
+Exemplo 1 — UI com ação principal
+
+Relato:
+"No produto ID 1234, o botão de adicionar ao carrinho não executa a ação esperada."
+
+Saída:
+Como cliente navegando pela loja, eu quero conseguir adicionar o produto ao carrinho, para que eu possa continuar a compra e finalizá-la depois.
+```
+
+### Role Prompting
+
+Justificativa: a User Story precisa de ator específico e de benefício para o usuário. Sem persona, a saída vira um ticket técnico. A persona de requisitos e produto puxa o texto para "Como ... eu quero ... para que".
+
+Onde: primeiras linhas do system prompt.
+
+```text
+Você é um Engenheiro de Requisitos Sênior e Product Manager com 10 anos
+em times ágeis. Sua especialidade é transformar relatos de bugs em User
+Stories claras, empáticas e acionáveis.
+```
+
+### Chain of Thought
+
+Justificativa: antes de escrever, o modelo precisa classificar o relato. Se errar a quantidade de problemas, o ator ou os blocos, a saída ou fica curta demais ou ganha seção indevida. O raciocínio fica interno. Se ele aparecer na resposta, Precision e F1 caem por causa do texto extra.
+
+Onde: `## Pense passo a passo antes de escrever (não mostre)` no system prompt, e de novo no user prompt, na frase "Classifique internamente".
+
+```text
+1. Há um problema ou vários em categorias diferentes?
+2. Quem é o ator?
+3. Se o defeito é do sistema, a persona é "Como o sistema" ou "Como o sistema de e-commerce".
+4. Qual é o comportamento desejado, em linguagem positiva?
+5. Quais blocos a tabela autoriza?
+6. Quais números, endpoints, status e mensagens precisam ser copiados literalmente?
+```
+
+### Skeleton of Thought
+
+Justificativa: cada categoria tem um esqueleto fixo. O modelo monta ator, objetivo, benefício e os critérios Gherkin antes de redigir, e só então preenche o molde simples ou o molde complexo. A tabela da lei fundamental diz qual bloco entra e qual bloco fica de fora.
+
+Onde: o fechamento do raciocínio interno, a tabela em `## LEI FUNDAMENTAL`, e os moldes `## FORMATO SIMPLES` e `## FORMATO COMPLEXO`.
+
+```text
+Monte um esqueleto interno: ator, objetivo, benefício, Dado que, Quando,
+Então, condições E, blocos extras. Não imprima o esqueleto.
+```
+
+### Regras explícitas de comportamento
+
+Justificativa: o enunciado pede regras de comportamento. Texto fora da User Story conta como informação a mais na Precision.
+
+Onde: `## LEI FUNDAMENTAL`, `## Regras de estilo` e `## Verificação interna antes de responder`.
+
+```text
+A resposta visível é SOMENTE a User Story.
+Não use negrito. Não use checkboxes. Não escreva título, introdução,
+conclusão nem "Aqui está a User Story".
+```
+
+## Resultados Finais
+
+Dataset público, com os 15 exemplos e os experimentos da v2:
+
+https://smith.langchain.com/public/1bda31f3-7cb1-4fd9-903e-9e8b3e55f392/d
+
+Experimento aprovado: `renatonasc-bug_to_user_story_v2-15514f42`, com 15 de 15 execuções. O tracing de cada exemplo abre nessa execução. Três deles são o botão do carrinho, o campo de e-mail e o layout de perfil no iOS.
+
+Notas impressas pelo `python src/evaluate.py`:
+
+| Métrica | Nota | Critério |
+| --- | ---: | --- |
+| Helpfulness | 0.90 | >= 0.8 |
+| Correctness | 0.97 | >= 0.8 |
+| F1-Score | 1.00 | >= 0.8 |
+| Clarity | 0.85 | >= 0.8 |
+| Precision | 0.94 | >= 0.8 |
+| Média das 5 | 0.9315 | >= 0.8 |
+
+Helpfulness é a média de Clarity e Precision. Correctness é a média de F1-Score e Precision.
+
+Saída do avaliador:
+
+![Notas do evaluate.py para a v2](docs/evidencias/evaluate-v2-cli.png)
+
+Notas por exemplo no LangSmith:
+
+![15 execuções da v2 no LangSmith](docs/evidencias/experimento-v2-langsmith.png)
+
+### Comparação v1 e v2
+
+A v1, em `prompts/bug_to_user_story_v1.yml`, pede "uma user story" sem formato, sem persona e sem exemplo. O relato entra no system prompt pela variável `{bug_report}`. A saída muda de tamanho e de estrutura a cada relato.
+
+A v2 separa os papéis. O system prompt traz a persona, o roteamento, os moldes e os exemplos. O user prompt só recebe `{bug_report}`. A história sai em Gherkin. Seção extra (`Contexto Técnico`, `Exemplo de Cálculo`, `Contexto de Segurança`, `Critérios de Prevenção`, `Critérios Técnicos`, `Critérios de Acessibilidade` ou o formato com `=== ===`) só entra quando a tabela autoriza. Números, endpoints e status do relato são copiados como estão no texto.
+
+## Como Executar
+
+Pré-requisitos: Python 3.10 ou superior, conta no LangSmith com handle público, e chave de API do provedor de LLM (OpenAI ou Gemini).
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Copie `.env.example` para `.env` e preencha `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `USERNAME_LANGSMITH_HUB`, `LLM_PROVIDER`, `LLM_MODEL`, `EVAL_MODEL` e a chave do provedor escolhido.
+
+```bash
+python src/pull_prompts.py
+```
+
+O pull grava `prompts/bug_to_user_story_v1.yml`. O prompt otimizado fica em `prompts/bug_to_user_story_v2.yml`.
+
+```bash
+pytest tests/test_prompts.py
+python src/push_prompts.py
+python src/evaluate.py
+```
+
+O evaluate cria o dataset `{LANGSMITH_PROJECT}-eval`, roda os 15 relatos e imprime as cinco notas. A aprovação exige cada nota e a média em 0.8 ou mais.
